@@ -48,7 +48,7 @@ flowchart TD
 
 ### From PyPI (once published)
 ```bash
-pip install pyforge-ai
+pip install pyforgeai-engine
 ```
 
 ### Local Editable Install (for development or local game projects)
