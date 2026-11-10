@@ -1,6 +1,7 @@
 # PyForgeAI
 
 [![Ask DeepWiki](https://img.shields.io/badge/Ask-DeepWiki-4B32C3?logo=read-the-docs&logoColor=white)](https://deepwiki.com/Drakonosinc/PyForgeAI)
+[![PyPI version](https://img.shields.io/pypi/v/pyforgeai-engine.svg)](https://pypi.org/project/pyforgeai-engine/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![PyTorch 2.0+](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C.svg?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -46,7 +47,7 @@ flowchart TD
 
 ## Installation
 
-### From PyPI (once published)
+### From PyPI
 ```bash
 pip install pyforgeai-engine
 ```
