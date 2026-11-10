@@ -26,17 +26,29 @@ def _new_model(
     input_size: int,
     output_size: int,
     hidden_sizes: Sequence[int] | None = None,
+    output_activation: str | None = None,
 ) -> Any:
-    model = build_model(type_model, input_size, output_size, hidden_sizes=hidden_sizes)
+    resolved_out_act = output_activation if output_activation is not None else ("tanh" if int(output_size) == 1 else None)
+    model = build_model(
+        type_model,
+        input_size,
+        output_size,
+        hidden_sizes=hidden_sizes,
+        output_activation=resolved_out_act,
+    )
     ensure_built_if_tf(model, input_size)
     return model
 
 
-def fitness_function(model: Any, target: Any) -> float:
-    """Evaluate a single model against a fitness environment, callable, or game object."""
+def fitness_function(model: Any, target: Any) -> float | list[float]:
+    """Evaluate a single model (or a population list on batch games) against a fitness environment, callable, or game object."""
     if isinstance(target, IFitnessEnvironment):
+        if isinstance(target, GameFitnessBridge) and isinstance(model, (list, tuple)) and target.is_batch_population_target():
+            return target.evaluate_population_batch(model)
         return float(target.evaluate_model(model))
     bridge = GameFitnessBridge(target)
+    if isinstance(model, (list, tuple)) and bridge.is_batch_population_target():
+        return bridge.evaluate_population_batch(model)
     return bridge.evaluate_model(model)
 
 
@@ -46,10 +58,17 @@ def initialize_population(
     input_size: int,
     output_size: int,
     hidden_sizes: Sequence[int] | None = None,
+    output_activation: str | None = None,
 ) -> list[Any]:
     """Create an initial population of neural networks with random weights."""
     return [
-        _new_model(type_model, input_size, output_size, hidden_sizes=hidden_sizes)
+        _new_model(
+            type_model,
+            input_size,
+            output_size,
+            hidden_sizes=hidden_sizes,
+            output_activation=output_activation,
+        )
         for _ in range(int(size))
     ]
 
@@ -64,20 +83,44 @@ def evaluate_population(
     evaluated_population: list[Any] = []
     raw_scores: list[float] = []
 
-    for model in population:
-        if bridge.should_stop():
-            break
-        trial_scores: list[float] = []
+    if bridge.is_batch_population_target():
+        pop_list = list(population)
+        if not pop_list or bridge.should_stop():
+            return [], []
+        accumulated: list[float] = []
+        trials_completed = 0
         for _ in range(max(1, int(num_trials))):
-            trial_scores.append(bridge.evaluate_model(model))
             if bridge.should_stop():
                 break
-        if not trial_scores:
-            break
-        evaluated_population.append(model)
-        raw_scores.append(sum(trial_scores) / len(trial_scores))
-        if bridge.should_stop():
-            break
+            batch_scores = bridge.evaluate_population_batch(pop_list)
+            if not batch_scores:
+                break
+            if not accumulated:
+                accumulated = [float(s) for s in batch_scores]
+            else:
+                accumulated = [acc + float(s) for acc, s in zip(accumulated, batch_scores)]
+            trials_completed += 1
+            if bridge.should_stop():
+                break
+        if not accumulated or trials_completed == 0:
+            return [], []
+        raw_scores = [acc / trials_completed for acc in accumulated]
+        evaluated_population = pop_list[: len(raw_scores)]
+    else:
+        for model in population:
+            if bridge.should_stop():
+                break
+            trial_scores: list[float] = []
+            for _ in range(max(1, int(num_trials))):
+                trial_scores.append(bridge.evaluate_model(model))
+                if bridge.should_stop():
+                    break
+            if not trial_scores:
+                break
+            evaluated_population.append(model)
+            raw_scores.append(sum(trial_scores) / len(trial_scores))
+            if bridge.should_stop():
+                break
 
     if not raw_scores:
         return [], []

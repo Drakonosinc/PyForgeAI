@@ -41,7 +41,10 @@ class GameFitnessBridge(IFitnessEnvironment):
         # Support Snake_Game / Flappy_Ghost style (`game.models` + `game.run_with_models()`)
         if hasattr(game, "run_with_models"):
             game.models = model
-            return float(game.run_with_models())
+            res = game.run_with_models()
+            if isinstance(res, (list, tuple, np.ndarray)):
+                return float(res[0]) if len(res) > 0 else 0.0
+            return float(res)
 
         if callable(self.target):
             return float(self.target(model))
@@ -50,6 +53,25 @@ class GameFitnessBridge(IFitnessEnvironment):
             "Target passed to GameFitnessBridge must be a callable `fn(model) -> float`, "
             "an IFitnessEnvironment, or a game instance defining `run_with_model()`."
         )
+
+    def is_batch_population_target(self) -> bool:
+        """Return True if the target evaluates an entire population simultaneously in a single episode (e.g. Flappy_Ghost / Ghost_Platform)."""
+        if isinstance(self.target, IFitnessEnvironment) or _is_plain_callable(self.target):
+            return False
+        return (
+            hasattr(self.target, "run_with_models")
+            and hasattr(self.target, "players")
+            and isinstance(getattr(self.target, "players", None), list)
+        )
+
+    def evaluate_population_batch(self, population: Any) -> list[float]:
+        """Assign the full `population` list to `game.models` and return per-agent fitness scores."""
+        game = self.target
+        game.models = list(population)
+        scores = game.run_with_models()
+        if isinstance(scores, (list, tuple, np.ndarray)):
+            return [float(s) for s in scores]
+        return [float(scores) for _ in population]
 
     def should_stop(self) -> bool:
         if self._stop_fn is not None:
@@ -72,6 +94,11 @@ class GameFitnessBridge(IFitnessEnvironment):
         if not isinstance(self.target, IFitnessEnvironment) and not _is_plain_callable(self.target):
             try:
                 self.target.model = model
+                if hasattr(self.target, "models") and isinstance(getattr(self.target, "models", None), list):
+                    if len(self.target.models) > 0:
+                        self.target.models[0] = model
+                    else:
+                        self.target.models = [model]
             except Exception:
                 pass
 

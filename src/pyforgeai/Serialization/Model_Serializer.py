@@ -24,11 +24,19 @@ from ..Models.Model_Builder import (
 
 def save_model(
     model: Any,
-    path: str,
+    path: Any = None,
     optimizer: Any = None,
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    """Save a PyTorch or TensorFlow model (and optional optimizer/metadata) to disk."""
+    """Save a PyTorch or TensorFlow model (and optional optimizer/metadata) to disk.
+
+    Supports both `save_model(model, path, optimizer=None)` and legacy
+    `save_model(model, optimizer, path)` call signatures.
+    """
+    if not isinstance(path, (str, os.PathLike)) and isinstance(optimizer, (str, os.PathLike)):
+        path, optimizer = optimizer, path
+    path = str(path)
+
     if hasattr(model, "get_internal_model"):
         model = model.get_internal_model()
 
@@ -40,11 +48,13 @@ def save_model(
         _, in_size, out_size, hidden = infer_architecture(model)
         payload: dict[str, Any] = {
             "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict() if optimizer is not None else {},
+            "optimizer_state_dict": optimizer.state_dict() if optimizer is not None and hasattr(optimizer, "state_dict") else {},
             "architecture": {
                 "input_size": in_size,
                 "output_size": out_size,
                 "hidden_sizes": hidden,
+                "activation": getattr(model, "activation_name", "relu"),
+                "output_activation": getattr(model, "output_activation_name", None),
             },
         }
         if metadata:
@@ -79,8 +89,19 @@ def load_model(
     optimizer: Any = None,
     hidden_sizes: Sequence[int] | None = None,
 ) -> Any | None:
-    """Load a saved PyTorch or TensorFlow model with automatic architecture detection & legacy layer remapping."""
+    """Load a saved PyTorch or TensorFlow model with automatic architecture detection & legacy layer remapping.
+
+    Supports both `load_model(path, type_model, input_size, output_size, optimizer)` and
+    legacy `load_model(path, input_size, output_size, optimizer=None)` call signatures.
+    """
     try:
+        # Handle legacy signature: load_model(path, input_size, output_size, optimizer=None)
+        if isinstance(model_or_type_model, int) and not isinstance(model_or_type_model, bool):
+            optimizer = output_size
+            output_size = input_size
+            input_size = model_or_type_model
+            model_or_type_model = "Pytorch"
+
         # Handle pre-instantiated model passed directly
         if not isinstance(model_or_type_model, str):
             model = model_or_type_model
@@ -122,11 +143,13 @@ def load_model(
         state_dict = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
         arch_meta = checkpoint.get("architecture", {}) if isinstance(checkpoint, dict) else {}
 
-        has_fc = any(k.startswith("fc1.") or k.startswith("fc2.") for k in state_dict.keys())
+        has_fc = any(k.startswith("fc") and "." in k and k.split(".")[0][2:].isdigit() for k in state_dict.keys())
         has_hidden = any(k.startswith("hidden_layers.") for k in state_dict.keys())
 
         resolved_in = int(input_size or arch_meta.get("input_size") or 6)
         resolved_out = int(output_size or arch_meta.get("output_size") or 2)
+        saved_act = arch_meta.get("activation", "relu")
+        saved_out_act = arch_meta.get("output_activation", None)
 
         if has_hidden:
             indices = sorted({int(k.split(".")[1]) for k in state_dict.keys() if k.startswith("hidden_layers.")})
@@ -141,29 +164,60 @@ def load_model(
                 resolved_out = int(state_dict["output_layer.weight"].shape[0])
             if not sizes:
                 sizes = list(hidden_sizes) if hidden_sizes else [128]
-            model = build_model(type_model, resolved_in, resolved_out, hidden_sizes=sizes)
+            model = build_model(
+                type_model,
+                resolved_in,
+                resolved_out,
+                hidden_sizes=sizes,
+                activation=saved_act,
+                output_activation=saved_out_act,
+            )
             _filtered_torch_load(model, state_dict)
         elif has_fc:
-            if "fc1.weight" in state_dict:
-                first_hidden = int(state_dict["fc1.weight"].shape[0])
+            fc_indices = sorted(
+                {
+                    int(k.split(".")[0][2:])
+                    for k in state_dict.keys()
+                    if k.startswith("fc") and "." in k and k.split(".")[0][2:].isdigit() and k.endswith(".weight")
+                }
+            )
+            if len(fc_indices) >= 2:
+                hidden_fc = fc_indices[:-1]
+                out_fc = fc_indices[-1]
+                first_w = state_dict[f"fc{hidden_fc[0]}.weight"]
                 if input_size is None:
-                    resolved_in = int(state_dict["fc1.weight"].shape[1])
+                    resolved_in = int(first_w.shape[1])
+                out_w = state_dict[f"fc{out_fc}.weight"]
+                if output_size is None:
+                    resolved_out = int(out_w.shape[0])
+                inferred_hidden = [int(state_dict[f"fc{idx}.weight"].shape[0]) for idx in hidden_fc]
+                # Legacy 3-layer checkpoints (fc1, fc2, fc3) from Flappy_Ghost / Snake_Game / Ghost_Platform_Game
+                legacy_act = "leaky_relu" if len(fc_indices) >= 3 else "relu"
+                legacy_out_act = "tanh" if (len(fc_indices) >= 3 and resolved_out == 1) else None
+                model = build_model(
+                    type_model,
+                    resolved_in,
+                    resolved_out,
+                    hidden_sizes=inferred_hidden,
+                    activation=legacy_act,
+                    output_activation=legacy_out_act,
+                )
+                remapped: dict[str, Any] = {}
+                for h_pos, fc_idx in enumerate(hidden_fc):
+                    if f"fc{fc_idx}.weight" in state_dict:
+                        remapped[f"hidden_layers.{h_pos}.weight"] = state_dict[f"fc{fc_idx}.weight"]
+                    if f"fc{fc_idx}.bias" in state_dict:
+                        remapped[f"hidden_layers.{h_pos}.bias"] = state_dict[f"fc{fc_idx}.bias"]
+                if f"fc{out_fc}.weight" in state_dict:
+                    remapped["output_layer.weight"] = state_dict[f"fc{out_fc}.weight"]
+                if f"fc{out_fc}.bias" in state_dict:
+                    remapped["output_layer.bias"] = state_dict[f"fc{out_fc}.bias"]
+                _filtered_torch_load(model, remapped)
             else:
                 any_w = next((v for k, v in state_dict.items() if k.endswith(".weight")), None)
                 first_hidden = int(any_w.shape[0]) if any_w is not None else 128
-            model = build_model(type_model, resolved_in, resolved_out, hidden_sizes=[first_hidden])
-            remapped: dict[str, Any] = {}
-            if "fc1.weight" in state_dict:
-                remapped["hidden_layers.0.weight"] = state_dict["fc1.weight"]
-            if "fc1.bias" in state_dict:
-                remapped["hidden_layers.0.bias"] = state_dict["fc1.bias"]
-            out_w = state_dict.get("fc2.weight")
-            out_b = state_dict.get("fc2.bias")
-            if out_w is not None and out_b is not None:
-                if out_w.shape[0] == resolved_out and out_w.shape[1] == first_hidden and out_b.shape[0] == resolved_out:
-                    remapped["output_layer.weight"] = out_w
-                    remapped["output_layer.bias"] = out_b
-            _filtered_torch_load(model, remapped)
+                model = build_model(type_model, resolved_in, resolved_out, hidden_sizes=[first_hidden])
+                _filtered_torch_load(model, state_dict)
         else:
             model = build_model(type_model, resolved_in, resolved_out, hidden_sizes=hidden_sizes)
             _filtered_torch_load(model, state_dict)

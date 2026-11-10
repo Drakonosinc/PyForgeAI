@@ -51,6 +51,7 @@ def build_model(
     hidden_sizes: Sequence[int] | None = None,
     activation: str = "relu",
     record_activations: bool = True,
+    output_activation: str | None = None,
 ) -> Any:
     """Instantiate a neural network for the requested backend ('Pytorch' or 'Tensorflow')."""
     normalized = type_model.strip().capitalize()
@@ -65,6 +66,7 @@ def build_model(
             hidden_sizes=hidden_sizes,
             activation=activation,
             record_activations=record_activations,
+            output_activation=output_activation,
         )
     if normalized in ("Tensorflow", "Tf", "Keras"):
         load_tensorflow(optional=False)
@@ -149,6 +151,7 @@ def clone_model(
     target_hidden = list(hidden_sizes) if hidden_sizes is not None else inferred_hidden
     record_act = getattr(model, "record_activations", True)
     activation = getattr(model, "activation_name", "relu")
+    output_activation = getattr(model, "output_activation_name", None)
 
     cloned = build_model(
         target_type,
@@ -157,6 +160,7 @@ def clone_model(
         hidden_sizes=target_hidden,
         activation=activation,
         record_activations=record_act,
+        output_activation=output_activation,
     )
     set_weights_np(cloned, get_weights_np(model))
     return cloned
