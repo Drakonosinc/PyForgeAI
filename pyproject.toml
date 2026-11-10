@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyforgeai"
+version = "1.0.0"
+description = "A modular, multi-backend game AI training and inference library featuring Neuroevolution (Genetic Algorithms) and Deep Q-Learning (DQN) for Pygame and Python simulations."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Drakonosinc" }
+]
+keywords = [
+    "ai",
+    "gamedev",
+    "pygame",
+    "pytorch",
+    "tensorflow",
+    "reinforcement-learning",
+    "q-learning",
+    "dqn",
+    "genetic-algorithm",
+    "neuroevolution",
+    "neural-network",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Games/Entertainment",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.24.0",
+    "torch>=2.0.0",
+]
+
+[project.optional-dependencies]
+tensorflow = [
+    "tensorflow>=2.12.0",
+]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Drakonosinc/PyForgeAI"
+Repository = "https://github.com/Drakonosinc/PyForgeAI"
+Documentation = "https://deepwiki.com/Drakonosinc/PyForgeAI"
+
+[tool.setuptools.packages.find]
+where = ["src"]
