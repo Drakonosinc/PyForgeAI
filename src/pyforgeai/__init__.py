@@ -1,5 +1,10 @@
 """PyForgeAI: Modular Neuroevolution (Genetic Algorithms) and Deep Q-Learning library for Python."""
 
+import os
+
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+
 from .Adapters import MockAdapter, PyTorchAdapter, TensorFlowAdapter, wrap_model
 from .AI_Controller import AIController, AIHandler
 from .AI_Factory import AIFactory

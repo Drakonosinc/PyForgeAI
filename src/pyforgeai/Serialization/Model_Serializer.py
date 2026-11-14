@@ -123,21 +123,67 @@ def load_model(
 
         if type_model in ("Tensorflow", "Tf", "Keras"):
             load_tensorflow(optional=False)
-            npz_path = path if path.endswith(".npz") and os.path.exists(path) else (
-                path + ".npz" if os.path.exists(path + ".npz") else path
-            )
-            data = np.load(npz_path)
-            keys = sorted(data.files, key=lambda v: int(v.replace("arr_", "")))
-            weights = [data[k] for k in keys]
-            in_sz = int(input_size or weights[0].shape[0])
-            out_sz = int(output_size or weights[-1].shape[0])
-            model = build_model("Tensorflow", in_sz, out_sz, hidden_sizes=hidden_sizes)
-            ensure_built_if_tf(model, in_sz)
-            set_weights_np(model, weights)
-            return model
+            npz_candidate = path if path.endswith(".npz") else path + ".npz"
+            if os.path.exists(npz_candidate):
+                data = np.load(npz_candidate)
+                keys = sorted(data.files, key=lambda v: int(v.replace("arr_", "")))
+                weights = [data[k] for k in keys]
+                in_sz = int(weights[0].shape[0]) if weights and weights[0].ndim == 2 else int(input_size or 6)
+                out_sz = (
+                    int(weights[-2].shape[1])
+                    if len(weights) >= 2 and weights[-2].ndim == 2
+                    else int(output_size or weights[-1].shape[0])
+                )
+                inferred_hidden = [int(weights[i].shape[1]) for i in range(0, max(0, len(weights) - 2), 2)]
+                resolved_hidden = inferred_hidden if inferred_hidden else (list(hidden_sizes) if hidden_sizes else [128])
+                model = build_model("Tensorflow", in_sz, out_sz, hidden_sizes=resolved_hidden)
+                ensure_built_if_tf(model, in_sz)
+                set_weights_np(model, weights)
+                return model
+
+            # Fallback: if a PyTorch .pth checkpoint exists at `path`, convert its weights into TensorFlow
+            if os.path.exists(path) and torch is not None:
+                torch_model = load_model(
+                    path=path,
+                    model_or_type_model="Pytorch",
+                    input_size=input_size,
+                    output_size=output_size,
+                    hidden_sizes=hidden_sizes,
+                )
+                if torch_model is not None:
+                    _, t_in, t_out, t_hidden = infer_architecture(torch_model)
+                    torch_weights = get_weights_np(torch_model)
+                    tf_weights = [w.T.copy() if w.ndim == 2 else w.copy() for w in torch_weights]
+                    act_name = getattr(torch_model, "activation_name", "relu")
+                    tf_model = build_model("Tensorflow", t_in, t_out, hidden_sizes=t_hidden, activation=act_name)
+                    ensure_built_if_tf(tf_model, t_in)
+                    set_weights_np(tf_model, tf_weights)
+                    return tf_model
+
+            return None
 
         if torch is None:
             raise ImportError("PyTorch is not installed in the current environment.")
+
+        if not os.path.exists(path):
+            npz_candidate = path if path.endswith(".npz") else path + ".npz"
+            if os.path.exists(npz_candidate):
+                data = np.load(npz_candidate)
+                keys = sorted(data.files, key=lambda v: int(v.replace("arr_", "")))
+                tf_weights = [data[k] for k in keys]
+                in_sz = int(tf_weights[0].shape[0]) if tf_weights and tf_weights[0].ndim == 2 else int(input_size or 6)
+                out_sz = (
+                    int(tf_weights[-2].shape[1])
+                    if len(tf_weights) >= 2 and tf_weights[-2].ndim == 2
+                    else int(output_size or tf_weights[-1].shape[0])
+                )
+                inferred_hidden = [int(tf_weights[i].shape[1]) for i in range(0, max(0, len(tf_weights) - 2), 2)]
+                resolved_hidden = inferred_hidden if inferred_hidden else (list(hidden_sizes) if hidden_sizes else [128])
+                torch_model = build_model(type_model, in_sz, out_sz, hidden_sizes=resolved_hidden)
+                torch_weights = [w.T.copy() if w.ndim == 2 else w.copy() for w in tf_weights]
+                set_weights_np(torch_model, torch_weights)
+                return torch_model
+            return None
 
         checkpoint = torch.load(path, map_location="cpu")
         state_dict = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
@@ -338,7 +384,11 @@ class AILoader:
             _ = self._get_selected_training()
             model_type = self._get_selected_model()
             arch = self._get_hidden_architecture()
-            if not os.path.exists(model_path):
+            if str(model_type).strip().capitalize() in ("Tensorflow", "Tf", "Keras"):
+                load_tensorflow(optional=False)
+            has_pth = os.path.exists(model_path)
+            has_npz = os.path.exists(model_path if str(model_path).endswith(".npz") else str(model_path) + ".npz")
+            if not has_pth and not has_npz:
                 return AIModelLoadResult(model=None, model_found=False, error_message=None)
             model = load_model(
                 path=model_path,

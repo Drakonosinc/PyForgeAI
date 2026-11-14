@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Sequence
 import numpy as np
 
@@ -11,6 +12,8 @@ except ImportError:
 
 def load_tensorflow(optional: bool = True):
     """Lazily import TensorFlow, optionally raising an informative error if missing."""
+    os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     try:
         import tensorflow as tf
         return tf
