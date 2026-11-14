@@ -4,7 +4,7 @@ import random
 from typing import Any, Callable, Sequence
 import numpy as np
 
-from ..Environments.Game_Bridge_Env import GameFitnessBridge
+from ..Environments.Game_Bridge_Env import FunctionalFitnessEnvironment
 from ..Interfaces.IEnvironment import IFitnessEnvironment
 from ..Interfaces.ITrainer import ITrainer, ITrainingCallback, TrainingResult
 from ..Models.Model_Builder import (
@@ -16,7 +16,6 @@ from ..Models.Model_Builder import (
 from ..Serialization.Model_Serializer import load_genetic_model, save_genetic_model
 
 
-# Aliases kept for backward compatibility with existing unit tests & game imports
 _get_weights_np = get_weights_np
 _set_weights_np = set_weights_np
 
@@ -40,16 +39,30 @@ def _new_model(
     return model
 
 
-def fitness_function(model: Any, target: Any) -> float | list[float]:
-    """Evaluate a single model (or a population list on batch games) against a fitness environment, callable, or game object."""
-    if isinstance(target, IFitnessEnvironment):
-        if isinstance(target, GameFitnessBridge) and isinstance(model, (list, tuple)) and target.is_batch_population_target():
-            return target.evaluate_population_batch(model)
-        return float(target.evaluate_model(model))
-    bridge = GameFitnessBridge(target)
-    if isinstance(model, (list, tuple)) and bridge.is_batch_population_target():
-        return bridge.evaluate_population_batch(model)
-    return bridge.evaluate_model(model)
+def _coerce_fitness_env(
+    target: Callable[[Any], float] | IFitnessEnvironment | None = None,
+    batch_fitness_fn: Callable[[list[Any]], Sequence[float]] | None = None,
+    stop_fn: Callable[[], bool] | None = None,
+    on_generation_fn: Callable[[int], None] | None = None,
+    on_best_fn: Callable[[Any], None] | None = None,
+) -> FunctionalFitnessEnvironment:
+    if isinstance(target, FunctionalFitnessEnvironment) and batch_fitness_fn is None and stop_fn is None:
+        return target
+    return FunctionalFitnessEnvironment(
+        target=target,
+        batch_fitness_fn=batch_fitness_fn,
+        stop_fn=stop_fn,
+        on_generation_fn=on_generation_fn,
+        on_best_fn=on_best_fn,
+    )
+
+
+def fitness_function(model: Any, target: Callable[[Any], float] | IFitnessEnvironment) -> float | list[float]:
+    """Evaluate a single model (or a population list) against an `IFitnessEnvironment` or callable."""
+    env = _coerce_fitness_env(target)
+    if isinstance(model, (list, tuple)) and env.is_batch_population_target():
+        return env.evaluate_population_batch(model)
+    return env.evaluate_model(model)
 
 
 def initialize_population(
@@ -75,24 +88,24 @@ def initialize_population(
 
 def evaluate_population(
     population: Sequence[Any],
-    target: Any,
+    target: Callable[[Any], float] | IFitnessEnvironment,
     num_trials: int = 3,
 ) -> tuple[list[Any], list[float]]:
     """Evaluate every individual in `population` over `num_trials` episodes and return positive shifted fitness scores."""
-    bridge = target if isinstance(target, GameFitnessBridge) else GameFitnessBridge(target)
+    env = _coerce_fitness_env(target)
     evaluated_population: list[Any] = []
     raw_scores: list[float] = []
 
-    if bridge.is_batch_population_target():
+    if env.is_batch_population_target():
         pop_list = list(population)
-        if not pop_list or bridge.should_stop():
+        if not pop_list or env.should_stop():
             return [], []
         accumulated: list[float] = []
         trials_completed = 0
         for _ in range(max(1, int(num_trials))):
-            if bridge.should_stop():
+            if env.should_stop():
                 break
-            batch_scores = bridge.evaluate_population_batch(pop_list)
+            batch_scores = env.evaluate_population_batch(pop_list)
             if not batch_scores:
                 break
             if not accumulated:
@@ -100,7 +113,7 @@ def evaluate_population(
             else:
                 accumulated = [acc + float(s) for acc, s in zip(accumulated, batch_scores)]
             trials_completed += 1
-            if bridge.should_stop():
+            if env.should_stop():
                 break
         if not accumulated or trials_completed == 0:
             return [], []
@@ -108,18 +121,18 @@ def evaluate_population(
         evaluated_population = pop_list[: len(raw_scores)]
     else:
         for model in population:
-            if bridge.should_stop():
+            if env.should_stop():
                 break
             trial_scores: list[float] = []
             for _ in range(max(1, int(num_trials))):
-                trial_scores.append(bridge.evaluate_model(model))
-                if bridge.should_stop():
+                trial_scores.append(env.evaluate_model(model))
+                if env.should_stop():
                     break
             if not trial_scores:
                 break
             evaluated_population.append(model)
             raw_scores.append(sum(trial_scores) / len(trial_scores))
-            if bridge.should_stop():
+            if env.should_stop():
                 break
 
     if not raw_scores:
@@ -241,9 +254,22 @@ class GeneticTrainer(ITrainer):
         self.best_fitness: float = float("-inf")
         self.last_result: TrainingResult | None = None
 
-    def train_with_result(self, target: Any) -> TrainingResult:
-        """Run neuroevolution on `target` (IFitnessEnvironment, callable `fn(model)->float`, or game instance)."""
-        bridge = GameFitnessBridge(target)
+    def train_with_result(
+        self,
+        target: Callable[[Any], float] | IFitnessEnvironment | None = None,
+        batch_fitness_fn: Callable[[list[Any]], Sequence[float]] | None = None,
+        stop_fn: Callable[[], bool] | None = None,
+        on_generation_fn: Callable[[int], None] | None = None,
+        on_best_fn: Callable[[Any], None] | None = None,
+    ) -> TrainingResult:
+        """Run neuroevolution against a pure fitness callable, batch callable, or `IFitnessEnvironment`."""
+        env = _coerce_fitness_env(
+            target=target,
+            batch_fitness_fn=batch_fitness_fn,
+            stop_fn=stop_fn,
+            on_generation_fn=on_generation_fn,
+            on_best_fn=on_best_fn,
+        )
         population = initialize_population(
             self.type_model,
             self.population_size,
@@ -262,14 +288,14 @@ class GeneticTrainer(ITrainer):
             cb.on_training_start(self)
 
         for generation in range(self.generations):
-            if bridge.should_stop():
+            if env.should_stop():
                 stopped_early = True
                 break
-            bridge.set_generation(generation)
+            env.on_generation_start(generation)
 
             evaluated_population, fitness_scores = evaluate_population(
                 population,
-                bridge,
+                env,
                 num_trials=self.num_trials,
             )
             if not fitness_scores:
@@ -300,16 +326,14 @@ class GeneticTrainer(ITrainer):
             if self.verbose:
                 print(f"Generation {generation}: Best Fitness = {current_best:.4f} (Mean = {mean_fitness:.4f})")
 
-            # Trigger callbacks
             should_halt = False
             for cb in self.callbacks:
                 if cb.on_iteration_end(generation, self.best_fitness, mean_fitness, self):
                     should_halt = True
-            if should_halt or bridge.should_stop():
-                stopped_early = should_halt or bridge.should_stop()
+            if should_halt or env.should_stop():
+                stopped_early = should_halt or env.should_stop()
                 break
 
-            # Elitism
             sorted_population = [
                 model
                 for _, model in sorted(
@@ -358,7 +382,7 @@ class GeneticTrainer(ITrainer):
                     )
                 )
 
-            while len(offspring) < num_offsprings and not bridge.should_stop():
+            while len(offspring) < num_offsprings and not env.should_stop():
                 extra_parent = random.choice(population)
                 extra_child = _new_model(
                     self.type_model,
@@ -376,13 +400,12 @@ class GeneticTrainer(ITrainer):
                     )
                 )
 
-            if bridge.should_stop():
+            if env.should_stop():
                 stopped_early = True
                 break
 
             next_population = new_population + offspring[:num_offsprings]
 
-            # Periodic diversity injection (from Snake_Game)
             if (
                 self.diversity_interval > 0
                 and generation > 0
@@ -404,7 +427,7 @@ class GeneticTrainer(ITrainer):
         if self.best_model is None and population:
             self.best_model = population[0]
 
-        bridge.assign_best_model(self.best_model)
+        env.on_best_model(self.best_model)
 
         if self.save_path and self.best_model is not None:
             save_genetic_model(self.best_model, optimizer=None, path=self.save_path)
@@ -421,12 +444,25 @@ class GeneticTrainer(ITrainer):
             cb.on_training_end(result, self)
         return result
 
-    def train(self, target: Any = None) -> Any:
-        return self.train_with_result(target).best_model
+    def train(
+        self,
+        target: Callable[[Any], float] | IFitnessEnvironment | None = None,
+        batch_fitness_fn: Callable[[list[Any]], Sequence[float]] | None = None,
+        stop_fn: Callable[[], bool] | None = None,
+        on_generation_fn: Callable[[int], None] | None = None,
+        on_best_fn: Callable[[Any], None] | None = None,
+    ) -> Any:
+        return self.train_with_result(
+            target=target,
+            batch_fitness_fn=batch_fitness_fn,
+            stop_fn=stop_fn,
+            on_generation_fn=on_generation_fn,
+            on_best_fn=on_best_fn,
+        ).best_model
 
 
 def genetic_algorithm(
-    game: Any,
+    target: Callable[[Any], float] | IFitnessEnvironment | None = None,
     type_model: str = "Pytorch",
     input_size: int = 6,
     output_size: int = 2,
@@ -440,8 +476,12 @@ def genetic_algorithm(
     adaptive_mutation: bool = False,
     diversity_interval: int = 0,
     verbose: bool = True,
+    batch_fitness_fn: Callable[[list[Any]], Sequence[float]] | None = None,
+    stop_fn: Callable[[], bool] | None = None,
+    on_generation_fn: Callable[[int], None] | None = None,
+    on_best_fn: Callable[[Any], None] | None = None,
 ) -> Any:
-    """Functional neuroevolution entry point preserving 100% compatibility with Pong_Game / Snake_Game."""
+    """Functional neuroevolution entry point accepting any pure fitness callable, batch callable, or `IFitnessEnvironment`."""
     trainer = GeneticTrainer(
         input_size=input_size,
         output_size=output_size,
@@ -457,4 +497,10 @@ def genetic_algorithm(
         diversity_interval=diversity_interval,
         verbose=verbose,
     )
-    return trainer.train(game)
+    return trainer.train(
+        target=target,
+        batch_fitness_fn=batch_fitness_fn,
+        stop_fn=stop_fn,
+        on_generation_fn=on_generation_fn,
+        on_best_fn=on_best_fn,
+    )

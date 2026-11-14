@@ -68,13 +68,18 @@ class TestQLearningTrainer(unittest.TestCase):
         self.assertEqual(len(result.history), 4)
         self.assertIsNotNone(result.best_model)
 
-    def test_qlearning_legacy_game_loop_and_save_load(self):
-        mock_game = MagicMock()
-        mock_game.exit = False
-        mock_game.run_with_model.return_value = 12.5
+    def test_qlearning_custom_episode_callback_and_save_load(self):
+        episodes_seen = []
+
+        def run_episode(trainer, ep_idx):
+            episodes_seen.append(ep_idx)
+            s = np.zeros(6, dtype=np.float32)
+            a = trainer.get_action(s)
+            trainer.store_experience(s, a, 12.5, s, True)
+            return 12.5
 
         best = q_learning_algorithm(
-            game=mock_game,
+            target=run_episode,
             type_model="Pytorch",
             input_size=6,
             output_size=2,
@@ -83,7 +88,7 @@ class TestQLearningTrainer(unittest.TestCase):
             verbose=False,
         )
         self.assertIsNotNone(best)
-        self.assertIs(mock_game.model, best)
+        self.assertEqual(episodes_seen, [0, 1])
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = os.path.join(tmp_dir, "q_model.pth")

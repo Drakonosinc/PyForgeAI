@@ -31,7 +31,7 @@ class IEnvironment(ABC):
         pass
 
     def should_stop(self) -> bool:
-        """Return True if the host application/window requested an immediate exit."""
+        """Return True if the host application requested an immediate training stop."""
         return False
 
 
@@ -43,6 +43,21 @@ class IFitnessEnvironment(ABC):
         """Run one complete episode/trial controlled by `model` and return its scalar fitness score."""
         pass
 
+    def evaluate_population(self, population: list[Any]) -> list[float] | None:
+        """Optional batch hook: evaluate an entire population simultaneously and return per-model scores.
+
+        Returns `None` by default, indicating the trainer should call `evaluate_model` individually.
+        """
+        return None
+
     def should_stop(self) -> bool:
-        """Return True if the host application/window requested an immediate exit."""
+        """Return True if the host application requested an immediate training stop."""
         return False
+
+    def on_generation_start(self, generation: int) -> None:
+        """Optional lifecycle hook invoked at the beginning of each generation."""
+        pass
+
+    def on_best_model(self, model: Any) -> None:
+        """Optional lifecycle hook invoked when a new best model is found or training finishes."""
+        pass

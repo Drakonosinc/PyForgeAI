@@ -81,7 +81,7 @@ class AIFactory:
         cfg = self._merge(config)
         cfg.update(kwargs)
         return QLearningTrainer(
-            game=cfg.get("game"),
+            env=cfg.get("env"),
             type_model=cfg.get("type_model", "Pytorch"),
             input_size=int(cfg.get("input_size", 6)),
             output_size=int(cfg.get("output_size", 2)),

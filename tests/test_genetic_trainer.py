@@ -76,15 +76,32 @@ class TestGeneticTrainer(unittest.TestCase):
         self.assertEqual(len(history_cb.best_scores), result.iterations_completed)
         self.assertGreater(trainer.mutation_rate, trainer.initial_mutation_rate)
 
-    def test_backward_compatible_genetic_algorithm_function(self):
-        mock_game = MagicMock()
-        mock_game.exit = False
-        mock_game.run_with_model.return_value = 25.0
+    def test_genetic_algorithm_with_single_and_batch_callables(self):
+        best_holder = {}
+        gen_seen = []
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = os.path.join(tmp_dir, "ga.pth")
             best = genetic_algorithm(
-                game=mock_game,
+                target=lambda model: 25.0,
+                type_model="Pytorch",
+                input_size=self.input_size,
+                output_size=self.output_size,
+                generations=2,
+                population_size=4,
+                num_trials=1,
+                hidden_sizes=self.hidden_sizes,
+                verbose=False,
+                on_generation_fn=lambda g: gen_seen.append(g),
+                on_best_fn=lambda m: best_holder.setdefault("best", m),
+            )
+            self.assertIsNotNone(best)
+            self.assertIs(best_holder.get("best"), best)
+            self.assertEqual(gen_seen, [0, 1])
+
+            # Also verify batch_fitness_fn (multi-agent / vectorized population evaluation)
+            best_batch = genetic_algorithm(
+                batch_fitness_fn=lambda pop: [float(i + 1) for i in range(len(pop))],
                 type_model="Pytorch",
                 input_size=self.input_size,
                 output_size=self.output_size,
@@ -94,8 +111,7 @@ class TestGeneticTrainer(unittest.TestCase):
                 hidden_sizes=self.hidden_sizes,
                 verbose=False,
             )
-            self.assertIsNotNone(best)
-            self.assertIs(mock_game.model, best)
+            self.assertIsNotNone(best_batch)
 
             save_genetic_model(best, optimizer=None, path=path)
             loaded = load_genetic_model(path, "Pytorch", self.input_size, self.output_size, hidden_sizes=self.hidden_sizes)

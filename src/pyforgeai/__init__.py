@@ -1,9 +1,14 @@
-"""PyForgeAI: Modular Neuroevolution (Genetic Algorithms) and Deep Q-Learning library for Pygame and Python simulations."""
+"""PyForgeAI: Modular Neuroevolution (Genetic Algorithms) and Deep Q-Learning library for Python."""
 
 from .Adapters import MockAdapter, PyTorchAdapter, TensorFlowAdapter, wrap_model
 from .AI_Controller import AIController, AIHandler
 from .AI_Factory import AIFactory
-from .Environments import CallbackRLEnvironment, GameFitnessBridge, TargetSeekEnvironment
+from .Environments import (
+    CallbackRLEnvironment,
+    FunctionalFitnessEnvironment,
+    GameFitnessBridge,
+    TargetSeekEnvironment,
+)
 from .Interfaces import (
     IAIModel,
     IEnvironment,
@@ -65,6 +70,7 @@ __all__ = [
     "CheckpointCallback",
     "DQNAgent",
     "EarlyStoppingCallback",
+    "FunctionalFitnessEnvironment",
     "GameFitnessBridge",
     "GeneticTrainer",
     "HistoryCallback",

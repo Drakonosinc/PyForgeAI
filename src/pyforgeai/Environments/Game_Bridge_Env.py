@@ -1,106 +1,97 @@
 from __future__ import annotations
 
-import inspect
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 import numpy as np
 
 from ..Interfaces.IEnvironment import IEnvironment, IFitnessEnvironment
 
 
-def _is_plain_callable(obj: Any) -> bool:
-    """Return True if `obj` is a function, lambda, or bound method rather than a game object or MagicMock."""
-    return inspect.isfunction(obj) or inspect.ismethod(obj) or inspect.isbuiltin(obj)
+class FunctionalFitnessEnvironment(IFitnessEnvironment):
+    """Domain-agnostic adapter turning pure Python callables into an `IFitnessEnvironment`.
 
-
-class GameFitnessBridge(IFitnessEnvironment):
-    """Bridges an `IFitnessEnvironment`, a pure function `fn(model) -> float`, or a Pygame `game` instance."""
+    Supports both single-agent evaluation (`fitness_fn(model) -> float`) and vectorized/multi-agent
+    population evaluation (`batch_fitness_fn(population_list) -> list[float]`), without assuming
+    any specific application or game object structure.
+    """
 
     def __init__(
         self,
-        target: Any,
+        target: Callable[[Any], float] | IFitnessEnvironment | None = None,
+        batch_fitness_fn: Callable[[list[Any]], Sequence[float]] | None = None,
         stop_fn: Callable[[], bool] | None = None,
+        on_generation_fn: Callable[[int], None] | None = None,
+        on_best_fn: Callable[[Any], None] | None = None,
     ) -> None:
+        if target is None and batch_fitness_fn is None:
+            raise TypeError(
+                "Must provide either `target` (a callable `fn(model) -> float` or `IFitnessEnvironment`) "
+                "or `batch_fitness_fn` (`fn(population) -> Sequence[float]`)."
+            )
+        if target is not None and not isinstance(target, IFitnessEnvironment) and not callable(target):
+            raise TypeError(
+                f"Expected `target` to be a callable `fn(model) -> float` or an `IFitnessEnvironment`, got {type(target).__name__}."
+            )
         self.target = target
+        self._batch_fitness_fn = batch_fitness_fn
         self._stop_fn = stop_fn
+        self._on_generation_fn = on_generation_fn
+        self._on_best_fn = on_best_fn
 
     def evaluate_model(self, model: Any) -> float:
         if isinstance(self.target, IFitnessEnvironment):
             return float(self.target.evaluate_model(model))
-
-        if _is_plain_callable(self.target):
-            return float(self.target(model))
-
-        game = self.target
-        # Support Pong_Game style (`game.model` + `game.ai_handler.set_runtime_model` + `game.run_with_model()`)
-        if hasattr(game, "run_with_model"):
-            game.model = model
-            if hasattr(game, "ai_handler") and hasattr(game.ai_handler, "set_runtime_model"):
-                game.ai_handler.set_runtime_model(model)
-            return float(game.run_with_model())
-
-        # Support Snake_Game / Flappy_Ghost style (`game.models` + `game.run_with_models()`)
-        if hasattr(game, "run_with_models"):
-            game.models = model
-            res = game.run_with_models()
-            if isinstance(res, (list, tuple, np.ndarray)):
-                return float(res[0]) if len(res) > 0 else 0.0
-            return float(res)
-
         if callable(self.target):
             return float(self.target(model))
-
-        raise TypeError(
-            "Target passed to GameFitnessBridge must be a callable `fn(model) -> float`, "
-            "an IFitnessEnvironment, or a game instance defining `run_with_model()`."
-        )
+        if self._batch_fitness_fn is not None:
+            scores = self._batch_fitness_fn([model])
+            return float(scores[0]) if len(scores) > 0 else 0.0
+        raise RuntimeError("No single-model evaluation function configured.")
 
     def is_batch_population_target(self) -> bool:
-        """Return True if the target evaluates an entire population simultaneously in a single episode (e.g. Flappy_Ghost / Ghost_Platform)."""
-        if isinstance(self.target, IFitnessEnvironment) or _is_plain_callable(self.target):
-            return False
-        return (
-            hasattr(self.target, "run_with_models")
-            and hasattr(self.target, "players")
-            and isinstance(getattr(self.target, "players", None), list)
-        )
+        """Return True if this environment evaluates an entire population list at once."""
+        if self._batch_fitness_fn is not None:
+            return True
+        if isinstance(self.target, IFitnessEnvironment):
+            # Check if subclass overrides evaluate_population
+            return type(self.target).evaluate_population is not IFitnessEnvironment.evaluate_population
+        return False
 
-    def evaluate_population_batch(self, population: Any) -> list[float]:
-        """Assign the full `population` list to `game.models` and return per-agent fitness scores."""
-        game = self.target
-        game.models = list(population)
-        scores = game.run_with_models()
-        if isinstance(scores, (list, tuple, np.ndarray)):
+    def evaluate_population(self, population: list[Any]) -> list[float] | None:
+        if self._batch_fitness_fn is not None:
+            scores = self._batch_fitness_fn(list(population))
             return [float(s) for s in scores]
-        return [float(scores) for _ in population]
+        if isinstance(self.target, IFitnessEnvironment):
+            return self.target.evaluate_population(list(population))
+        return None
+
+    def evaluate_population_batch(self, population: Sequence[Any]) -> list[float]:
+        res = self.evaluate_population(list(population))
+        if res is not None:
+            return res
+        return [self.evaluate_model(m) for m in population]
 
     def should_stop(self) -> bool:
         if self._stop_fn is not None:
             return bool(self._stop_fn())
         if isinstance(self.target, IFitnessEnvironment):
             return bool(self.target.should_stop())
-        if _is_plain_callable(self.target):
-            return False
-        exit_attr = getattr(self.target, "exit", False)
-        return bool(exit_attr) if isinstance(exit_attr, bool) else False
+        return False
 
-    def set_generation(self, generation: int) -> None:
-        if not isinstance(self.target, IFitnessEnvironment) and not _is_plain_callable(self.target):
-            try:
-                self.target.generation = generation
-            except Exception:
-                pass
+    def on_generation_start(self, generation: int) -> None:
+        if self._on_generation_fn is not None:
+            self._on_generation_fn(int(generation))
+        elif isinstance(self.target, IFitnessEnvironment):
+            self.target.on_generation_start(int(generation))
 
-    def assign_best_model(self, model: Any) -> None:
-        if not isinstance(self.target, IFitnessEnvironment) and not _is_plain_callable(self.target):
-            try:
-                self.target.model = model
-                if hasattr(self.target, "models") and isinstance(getattr(self.target, "models", None), list):
-                    if len(self.target.models) > 0:
-                        self.target.models[0] = model
-                    else:
-                        self.target.models = [model]
-            except Exception:
-                pass
+    def on_best_model(self, model: Any) -> None:
+        if self._on_best_fn is not None:
+            self._on_best_fn(model)
+        elif isinstance(self.target, IFitnessEnvironment):
+            self.target.on_best_model(model)
+
+
+# Alias kept for backward import compatibility
+GameFitnessBridge = FunctionalFitnessEnvironment
 
 
 class CallbackRLEnvironment(IEnvironment):

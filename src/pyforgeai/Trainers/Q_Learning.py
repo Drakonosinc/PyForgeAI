@@ -167,11 +167,11 @@ class DQNAgent:
 
 
 class QLearningTrainer(ITrainer):
-    """Deep Q-Learning trainer supporting both Gym-style `IEnvironment` loops and event-driven Pygame loops."""
+    """Deep Q-Learning trainer supporting both Gym-style `IEnvironment` loops and custom episode callables."""
 
     def __init__(
         self,
-        game: Any = None,
+        env: IEnvironment | Callable[[QLearningTrainer, int], float] | None = None,
         type_model: str = "Pytorch",
         input_size: int = 6,
         output_size: int = 2,
@@ -190,7 +190,7 @@ class QLearningTrainer(ITrainer):
         callbacks: Sequence[ITrainingCallback] | None = None,
         verbose: bool = True,
     ) -> None:
-        self.game = game
+        self.env = env
         self.type_model = type_model
         self.input_size = int(input_size)
         self.output_size = int(output_size)
@@ -316,44 +316,51 @@ class QLearningTrainer(ITrainer):
             cb.on_training_end(result, self)
         return result
 
-    def train(self, target: Any = None) -> SimpleNN_Pytorch:
-        """Run training against an `IEnvironment` or a game instance defining `run_with_model()`."""
-        target_obj = target if target is not None else self.game
+    def train(
+        self,
+        target: IEnvironment | Callable[[QLearningTrainer, int], float] | None = None,
+        stop_fn: Callable[[], bool] | None = None,
+    ) -> SimpleNN_Pytorch:
+        """Run training against an `IEnvironment` or a custom episode callback `episode_fn(trainer, episode_idx) -> float`."""
+        target_obj = target if target is not None else self.env
         if isinstance(target_obj, IEnvironment):
             return self.train_environment_with_result(target_obj).best_model
 
-        if target_obj is None:
-            raise ValueError("A target IEnvironment or game instance must be provided to QLearningTrainer.train().")
+        if not callable(target_obj):
+            raise TypeError(
+                "QLearningTrainer.train() requires an `IEnvironment` or a callable `episode_fn(trainer, episode_idx) -> float`."
+            )
 
-        # Event-driven game loop mode (compatible with Pong_Game)
-        global _qlearning_trainer
-        _qlearning_trainer = self
-        target_obj.qlearning_trainer = self
-        target_obj._qlearning_state = None
-        target_obj._qlearning_prev_reward = 0
+        global _active_qlearning_trainer
+        _active_qlearning_trainer = self
+        self.current_episode = 0
+        self.best_reward = float("-inf")
+        self.rewards_history.clear()
+        stopped_early = False
 
         for cb in self.callbacks:
             cb.on_training_start(self)
 
-        while self.current_episode < self.episodes:
-            target_obj.generation = self.current_episode
-            total_reward = float(target_obj.run_with_model())
-            training_complete = self.episode_complete(total_reward)
-            mean_recent = float(np.mean(self.rewards_history[-10:]))
-            should_halt = any(
-                cb.on_iteration_end(self.current_episode - 1, self.best_reward, mean_recent, self)
-                for cb in self.callbacks
-            )
-            if training_complete or should_halt or getattr(target_obj, "exit", False):
-                break
+        try:
+            while self.current_episode < self.episodes:
+                if stop_fn is not None and stop_fn():
+                    stopped_early = True
+                    break
+                ep_idx = self.current_episode
+                total_reward = float(target_obj(self, ep_idx))
+                training_complete = self.episode_complete(total_reward)
+                mean_recent = float(np.mean(self.rewards_history[-10:]))
+                should_halt = any(
+                    cb.on_iteration_end(ep_idx, self.best_reward, mean_recent, self)
+                    for cb in self.callbacks
+                )
+                if training_complete or should_halt or (stop_fn is not None and stop_fn()):
+                    stopped_early = should_halt or (stop_fn is not None and stop_fn())
+                    break
+        finally:
+            _active_qlearning_trainer = None
 
         best_model = self.get_best_model()
-        for attr in ("_qlearning_state", "_qlearning_prev_reward", "qlearning_trainer"):
-            if hasattr(target_obj, attr):
-                delattr(target_obj, attr)
-        _qlearning_trainer = None
-        target_obj.model = best_model
-
         if self.save_path and best_model is not None:
             save_qlearning_model(best_model, self.agent.optimizer, self.save_path)
 
@@ -362,7 +369,7 @@ class QLearningTrainer(ITrainer):
             best_score=self.best_reward,
             history=list(self.rewards_history),
             iterations_completed=self.current_episode,
-            stopped_early=bool(getattr(target_obj, "exit", False)),
+            stopped_early=stopped_early,
         )
         self.last_result = result
         for cb in self.callbacks:
@@ -370,19 +377,16 @@ class QLearningTrainer(ITrainer):
         return best_model
 
 
-# Kept for backward compatibility with legacy event-driven Pong_Game imports
-_qlearning_trainer: QLearningTrainer | None = None
+_active_qlearning_trainer: QLearningTrainer | None = None
 
 
-def get_active_qlearning_trainer(game: Any = None) -> QLearningTrainer | None:
-    """Retrieve the active QLearningTrainer from `game.qlearning_trainer` or module fallback."""
-    if game is not None and hasattr(game, "qlearning_trainer"):
-        return game.qlearning_trainer
-    return _qlearning_trainer
+def get_active_qlearning_trainer(context: Any = None) -> QLearningTrainer | None:
+    """Return the currently active `QLearningTrainer` during an episode callback."""
+    return _active_qlearning_trainer
 
 
 def q_learning_algorithm(
-    game: Any,
+    target: IEnvironment | Callable[[QLearningTrainer, int], float],
     type_model: str = "Pytorch",
     input_size: int = 6,
     output_size: int = 2,
@@ -394,10 +398,11 @@ def q_learning_algorithm(
     epsilon_decay: float = 0.995,
     hidden_sizes: Sequence[int] | None = None,
     verbose: bool = True,
+    stop_fn: Callable[[], bool] | None = None,
 ) -> SimpleNN_Pytorch:
-    """Functional Q-Learning entry point preserving 100% compatibility with Pong_Game."""
+    """Functional Q-Learning entry point accepting an `IEnvironment` or `episode_fn(trainer, episode_idx) -> float`."""
     trainer = QLearningTrainer(
-        game=game,
+        env=target,
         type_model=type_model,
         input_size=input_size,
         output_size=output_size,
@@ -410,4 +415,4 @@ def q_learning_algorithm(
         hidden_sizes=hidden_sizes,
         verbose=verbose,
     )
-    return trainer.train(game)
+    return trainer.train(target, stop_fn=stop_fn)
