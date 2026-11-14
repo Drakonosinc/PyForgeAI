@@ -38,6 +38,7 @@ class SimpleNN_Tensorflow:
         self.output_layer = layers.Dense(self.output_size)
         self.fc1 = self.hidden_layers[0]
         self.activations: np.ndarray | None = None
+        self.layer_activations: list[np.ndarray] | None = None
 
         inputs = tf.keras.Input(shape=(self.input_size,), dtype=tf.float32)
         x = inputs
@@ -46,6 +47,18 @@ class SimpleNN_Tensorflow:
         outputs = self.output_layer(x)
         self._keras_model = tf.keras.Model(inputs=inputs, outputs=outputs)
         self.built = True
+
+    @staticmethod
+    def _normalize_vec(vec: np.ndarray) -> np.ndarray:
+        v = np.asarray(vec, dtype=np.float32).flatten()
+        if v.size == 0:
+            return v
+        vmin = float(np.min(v))
+        vmax = float(np.max(v))
+        span = vmax - vmin
+        if span > 1e-6:
+            return (v - vmin) / span
+        return np.clip(np.abs(v), 0.0, 1.0)
 
     @property
     def trainable_variables(self) -> Any:
@@ -69,20 +82,35 @@ class SimpleNN_Tensorflow:
         x_tensor = tf.convert_to_tensor(x, dtype=tf.float32)
         if len(x_tensor.shape) == 1:
             x_tensor = tf.expand_dims(x_tensor, axis=0)
+
+        is_single = x_tensor.shape[0] == 1
+        should_record = self.record_activations and (is_single or self.layer_activations is None)
+        recorded_layers: list[np.ndarray] = []
+        if should_record:
+            try:
+                recorded_layers.append(self._normalize_vec(x_tensor[0].numpy()))
+            except Exception:
+                should_record = False
+
         for i, layer in enumerate(self.hidden_layers):
             x_tensor = layer(x_tensor)
-            if i == 0 and self.record_activations:
+            if should_record:
                 try:
-                    activations_np = x_tensor.numpy().reshape(1, -1)
-                    min_val = np.min(activations_np)
-                    max_val = np.max(activations_np)
-                    if max_val - min_val != 0:
-                        self.activations = (activations_np - min_val) / (max_val - min_val)
-                    else:
-                        self.activations = activations_np
+                    norm_h = self._normalize_vec(x_tensor[0].numpy())
+                    recorded_layers.append(norm_h)
+                    if i == 0:
+                        self.activations = norm_h.reshape(1, -1)
                 except Exception:
                     pass
-        return self.output_layer(x_tensor)
+
+        out = self.output_layer(x_tensor)
+        if should_record:
+            try:
+                recorded_layers.append(self._normalize_vec(out[0].numpy()))
+                self.layer_activations = recorded_layers
+            except Exception:
+                pass
+        return out
 
     def call(self, x: Any, training: bool = False) -> Any:
         return self.forward(x)

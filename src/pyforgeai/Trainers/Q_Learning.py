@@ -103,8 +103,6 @@ class DQNAgent:
         self.loss_fn = nn.SmoothL1Loss() if loss_type.lower() == "huber" else nn.MSELoss()
 
     def select_action(self, state: np.ndarray | list[float]) -> int:
-        if random.random() < self.epsilon:
-            return random.randrange(self.action_size)
         with torch.no_grad():
             tensor_state = torch.as_tensor(
                 np.asarray(state, dtype=np.float32),
@@ -112,7 +110,9 @@ class DQNAgent:
                 device=self.device,
             )
             q_values = self.policy_net(tensor_state)
-            return int(torch.argmax(q_values).item())
+        if random.random() < self.epsilon:
+            return random.randrange(self.action_size)
+        return int(torch.argmax(q_values).item())
 
     def store_transition(
         self,

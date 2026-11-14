@@ -68,21 +68,49 @@ class SimpleNN_Pytorch(nn.Module):
             self.fc2 = self.output_layer
             self.fc3 = self.output_layer
         self.activations: np.ndarray | None = None
+        self.layer_activations: list[np.ndarray] | None = None
+
+    @staticmethod
+    def _normalize_vec(vec: np.ndarray) -> np.ndarray:
+        v = np.asarray(vec, dtype=np.float32).flatten()
+        if v.size == 0:
+            return v
+        vmin = float(np.min(v))
+        vmax = float(np.max(v))
+        span = vmax - vmin
+        if span > 1e-6:
+            return (v - vmin) / span
+        return np.clip(np.abs(v), 0.0, 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        is_single = x.dim() == 1 or (x.dim() >= 2 and x.shape[0] == 1)
+        should_record = self.record_activations and (is_single or self.layer_activations is None)
+
+        if should_record:
+            with torch.no_grad():
+                x0 = x if x.dim() == 1 else x[0]
+                recorded_layers: list[np.ndarray] = [self._normalize_vec(x0.detach().cpu().numpy())]
+
         for i, layer in enumerate(self.hidden_layers):
             x = self._activation_fn(layer(x))
-            if i == 0 and self.record_activations:
+            if should_record:
                 with torch.no_grad():
-                    act = x.detach().cpu().numpy().reshape(1, -1)
-                    span = act.max() - act.min()
-                    if span != 0.0:
-                        self.activations = (act - act.min()) / span
-                    else:
-                        self.activations = act
+                    h0 = x if x.dim() == 1 else x[0]
+                    norm_h = self._normalize_vec(h0.detach().cpu().numpy())
+                    recorded_layers.append(norm_h)
+                    if i == 0:
+                        self.activations = norm_h.reshape(1, -1)
+
         out = self.output_layer(x)
         if self._output_activation_fn is not None:
             out = self._output_activation_fn(out)
+
+        if should_record:
+            with torch.no_grad():
+                o0 = out if out.dim() == 1 else out[0]
+                recorded_layers.append(self._normalize_vec(o0.detach().cpu().numpy()))
+                self.layer_activations = recorded_layers
+
         return out
 
 
