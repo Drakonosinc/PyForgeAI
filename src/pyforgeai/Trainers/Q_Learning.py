@@ -189,9 +189,20 @@ class QLearningTrainer(ITrainer):
         save_path: str | None = None,
         callbacks: Sequence[ITrainingCallback] | None = None,
         verbose: bool = True,
+        framework: str | None = None,
+        stop_fn: Callable[[], bool] | None = None,
+        on_episode_fn: Callable[..., Any] | None = None,
     ) -> None:
         self.env = env
-        self.type_model = type_model
+        resolved_type_model = framework if framework is not None else type_model
+        if resolved_type_model.strip().capitalize() not in ("Pytorch", "Torch"):
+            resolved_type_model = "Pytorch"
+        self.type_model = resolved_type_model
+        if env is not None and isinstance(env, IEnvironment):
+            if input_size == 6 and hasattr(env, "state_size"):
+                input_size = int(getattr(env, "state_size"))
+            if output_size == 2 and (hasattr(env, "action_size") or hasattr(env, "action_space")):
+                output_size = int(getattr(env, "action_size", getattr(env, "action_space", 2)))
         self.input_size = int(input_size)
         self.output_size = int(output_size)
         self.episodes = int(episodes)
@@ -202,10 +213,12 @@ class QLearningTrainer(ITrainer):
         self.save_path = save_path
         self.callbacks = list(callbacks) if callbacks else []
         self.verbose = bool(verbose)
+        self.stop_fn = stop_fn
+        self.on_episode_fn = on_episode_fn
         self.last_result: TrainingResult | None = None
 
         self.agent = DQNAgent(
-            type_model=type_model,
+            type_model=self.type_model,
             state_size=self.input_size,
             action_size=self.output_size,
             lr=lr,
@@ -269,9 +282,12 @@ class QLearningTrainer(ITrainer):
             cb.on_training_start(self)
 
         for ep in range(self.episodes):
-            if env.should_stop():
+            if env.should_stop() or (self.stop_fn is not None and self.stop_fn()):
                 stopped_early = True
                 break
+
+            if hasattr(env, "game") and getattr(env, "game", None) is not None:
+                env.game.models = self.agent.policy_net
 
             state = env.reset()
             total_reward = 0.0
@@ -279,15 +295,22 @@ class QLearningTrainer(ITrainer):
             steps = 0
 
             while not done and steps < max_steps_per_episode:
-                if env.should_stop():
+                if env.should_stop() or (self.stop_fn is not None and self.stop_fn()):
                     stopped_early = True
                     break
                 action = self.get_action(state)
-                next_state, reward, done, _ = env.step(action)
+                step_out = env.step(action)
+                next_state, reward, done = step_out[0], step_out[1], step_out[2]
                 self.store_experience(state, action, reward, next_state, done)
                 state = next_state
                 total_reward += reward
                 steps += 1
+
+            if callable(self.on_episode_fn):
+                try:
+                    self.on_episode_fn(ep, total_reward, self.agent.epsilon)
+                except TypeError:
+                    self.on_episode_fn(ep)
 
             training_complete = self.episode_complete(total_reward)
             mean_recent = float(np.mean(self.rewards_history[-10:]))

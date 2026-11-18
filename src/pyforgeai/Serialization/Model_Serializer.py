@@ -88,6 +88,7 @@ def load_model(
     output_size: int | None = None,
     optimizer: Any = None,
     hidden_sizes: Sequence[int] | None = None,
+    framework: str | None = None,
 ) -> Any | None:
     """Load a saved PyTorch or TensorFlow model with automatic architecture detection & legacy layer remapping.
 
@@ -100,7 +101,9 @@ def load_model(
             optimizer = output_size
             output_size = input_size
             input_size = model_or_type_model
-            model_or_type_model = "Pytorch"
+            model_or_type_model = framework if framework is not None else "Pytorch"
+        elif framework is not None and isinstance(model_or_type_model, str):
+            model_or_type_model = framework
 
         # Handle pre-instantiated model passed directly
         if not isinstance(model_or_type_model, str):

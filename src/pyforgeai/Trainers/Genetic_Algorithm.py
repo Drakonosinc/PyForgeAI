@@ -480,12 +480,14 @@ def genetic_algorithm(
     stop_fn: Callable[[], bool] | None = None,
     on_generation_fn: Callable[[int], None] | None = None,
     on_best_fn: Callable[[Any], None] | None = None,
+    framework: str | None = None,
 ) -> Any:
     """Functional neuroevolution entry point accepting any pure fitness callable, batch callable, or `IFitnessEnvironment`."""
+    resolved_type_model = framework if framework is not None else type_model
     trainer = GeneticTrainer(
         input_size=input_size,
         output_size=output_size,
-        type_model=type_model,
+        type_model=resolved_type_model,
         hidden_sizes=hidden_sizes,
         generations=generations,
         population_size=population_size,
