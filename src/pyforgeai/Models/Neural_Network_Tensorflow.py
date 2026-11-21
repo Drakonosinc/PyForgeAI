@@ -53,12 +53,14 @@ class SimpleNN_Tensorflow:
         v = np.asarray(vec, dtype=np.float32).flatten()
         if v.size == 0:
             return v
+        if v.size == 1:
+            return 1.0 / (1.0 + np.exp(-np.clip(v, -15.0, 15.0)))
         vmin = float(np.min(v))
         vmax = float(np.max(v))
         span = vmax - vmin
         if span > 1e-6:
             return (v - vmin) / span
-        return np.clip(np.abs(v), 0.0, 1.0)
+        return 1.0 / (1.0 + np.exp(-np.clip(v, -15.0, 15.0)))
 
     @property
     def trainable_variables(self) -> Any:
