@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyforgeai-engine"
-version = "1.0.0"
+version = "1.1.0"
 description = "A modular, multi-backend game AI training and inference library featuring Neuroevolution (Genetic Algorithms) and Deep Q-Learning (DQN) for Pygame and Python simulations."
 readme = "README.md"
 requires-python = ">=3.10"
